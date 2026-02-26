@@ -12,6 +12,8 @@ const knownPeers = new Set<string>([
     "45.32.235.245:18018"
 ]);
 
+const knownTypes = ["hello", "getpeers", "peers", "error"];
+
 // Helper function to send messages in Canonical JSON format
 function sendMessage(socket: net.Socket, messageObj: any) {
     const canonicalString = canonicalize(messageObj);
@@ -65,6 +67,22 @@ const server = net.createServer((socket) => {
                     throw new Error("Missing type or not a valid dictionary");
                 }
 
+                if (!knownTypes.includes(parsedMessage.type)) {
+                    throw new Error("Unknown message type");
+                }
+
+                // Verify version
+                if (parsedMessage.type === 'hello') {
+                    if (typeof parsedMessage.version !== 'string' || !parsedMessage.version.startsWith('0.10.')) {
+                        throw new Error("Invalid hello version format");
+                    }
+                } else if (parsedMessage.type === 'peers') {
+                    // Check if list of peers is an array of strings
+                    if (!Array.isArray(parsedMessage.peers)) {
+                        throw new Error("Invalid peers format");
+                    }
+                }
+
                 // Handshake Validation Logic
                 if (!hasSaidHello) {
                     if (parsedMessage.type !== 'hello') {
@@ -78,14 +96,6 @@ const server = net.createServer((socket) => {
                         socket.end();
                         return; // Stop processing this chunk
                     } else {
-                        // It is a hello message! Now verify the version.
-                        const peerVersion = parsedMessage.version;
-                        if (typeof peerVersion !== 'string' || !peerVersion.startsWith('0.10.')) {
-                            console.error(`[!] Invalid version from ${socket.remoteAddress}: ${peerVersion}. Disconnecting.`);
-                            socket.end();
-                            return;
-                        }
-
                         // Handshake is complete!
                         hasSaidHello = true;
                         console.log(`[✓] Handshake successful with ${socket.remoteAddress} (Agent: ${parsedMessage.agent || 'Unknown'})`);
@@ -102,22 +112,17 @@ const server = net.createServer((socket) => {
                     });
                 } 
                 else if (parsedMessage.type === 'peers') {
-                    if (Array.isArray(parsedMessage.peers)) {
-                        console.log(`[i] Received a list of ${parsedMessage.peers.length} peers.`);
-                        // Add each received peer to our known list
-                        parsedMessage.peers.forEach((peer: string) => {
-                            if (typeof peer === 'string') {
-                                knownPeers.add(peer);
-                            }
-                        });
-                        console.log(`[i] We now know ${knownPeers.size} total peers.`);
-                    }
-                }
-                else {
-                    console.log(`[DATA] Received other valid message: ${parsedMessage.type}`);
-                }
-                
-            } catch (e) {
+                    console.log(`[i] Received a list of ${parsedMessage.peers.length} peers.`);
+                    // Add each received peer to our known list
+                    parsedMessage.peers.forEach((peer: string) => {
+                        if (typeof peer === 'string') {
+                            knownPeers.add(peer);
+                        }
+                    });
+                    console.log(`[i] We now know ${knownPeers.size} total peers.`);
+                }                
+            } 
+            catch (e) {
                 // The Error Handler: It wasn't valid JSON!
                 console.error(`Invalid format received from ${socket.remoteAddress}. Disconnecting.`);
                 
