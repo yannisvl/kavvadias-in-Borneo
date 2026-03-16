@@ -1,16 +1,22 @@
 import * as net from 'net';
 import canonicalize from 'canonicalize';
+import { MessageSchema } from './types';
+import { db, getObjectId } from './object';
+import { validateTransaction } from './validation';
 
 const PORT = 18018;
 const NODE_NAME = "kavvadias-in-Borneo";
 const VERSION = "0.10.0"; // The required protocol version
 
-// 1. Hard-code the bootstrapping peers provided by the course staff
+// Hard-code the bootstrapping peers provided by the course
 const knownPeers = new Set<string>([
     "95.179.158.137:18018",
     "95.179.132.22:18018",
     "45.32.235.245:18018"
 ]);
+
+// This keeps track of the actual, live network pipes currently connected to us
+const activeSockets = new Set<net.Socket>();
 
 const knownTypes = ["hello", "getpeers", "peers", "error"];
 
@@ -22,11 +28,23 @@ function sendMessage(socket: net.Socket, messageObj: any) {
     }
 }
 
+function broadcast(message: any, senderToExclude?: net.Socket) {
+    for (const peerSocket of activeSockets) {
+        // We don't want to send it back to the peer who just sent it to us!
+        if (peerSocket !== senderToExclude) {
+            sendMessage(peerSocket, message);
+        }
+    }
+}
+
 const server = net.createServer((socket) => {
     console.log(`[+] New connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
+    // Add the socket to our guestbook immediately!
+    activeSockets.add(socket);
+
     // The Buffer: Our waiting room for incoming data fragments
-    let buffer = ""; 
+    let buffer = "";
     // State to track if this specific peer has completed the handshake
     let hasSaidHello = false;
 
@@ -40,98 +58,123 @@ const server = net.createServer((socket) => {
         type: "getpeers"
     });
 
-    socket.on('data', (data) => {
+    socket.on('data', async (data) => {
         // Add the newly arrived chunk of data to our waiting room
         buffer += data.toString();
 
         // The Loop: Check if we have at least one complete message (a newline)
         while (buffer.includes('\n')) {
-            // Find where the first newline is
             const newlineIndex = buffer.indexOf('\n');
-            
-            // Extract everything up to the newline as our message string
             const messageString = buffer.slice(0, newlineIndex);
-            
-            // Keep everything after the newline in the buffer for next time
-            buffer = buffer.slice(newlineIndex + 1); 
+            buffer = buffer.slice(newlineIndex + 1);
 
-            // Ignore empty lines just in case
             if (messageString.trim() === "") continue;
 
-            // The Parser: Try to read the message as JSON
             try {
-                const parsedMessage = JSON.parse(messageString);
+                // Structural Validation (Replaces all old if/else checks!)
+                const rawJson = JSON.parse(messageString);
+                const parsedMessage = MessageSchema.parse(rawJson); // Zod checks the rules here!
 
-                // Every valid message must be a JSON object with a "type" string
-                if (typeof parsedMessage !== 'object' || parsedMessage === null || typeof parsedMessage.type !== 'string') {
-                    throw new Error("Missing type or not a valid dictionary");
+                // --- THE HANDSHAKE BOUNCER ---
+                // If they haven't said hello yet, and this current message IS NOT a hello, kick them out!
+                if (!hasSaidHello && parsedMessage.type !== 'hello') {
+                    sendMessage(socket, { 
+                        type: "error", 
+                        name: "INVALID_HANDSHAKE", 
+                        description: "You must send a hello message first." 
+                    });
+                    socket.destroy(); // Hang up the connection
+                    return; // Stop processing
                 }
 
-                if (!knownTypes.includes(parsedMessage.type)) {
-                    throw new Error("Unknown message type");
-                }
-
-                // Verify version
+                // If they just said hello, update their status so they can send other things!
                 if (parsedMessage.type === 'hello') {
-                    if (typeof parsedMessage.version !== 'string' || !parsedMessage.version.startsWith('0.10.')) {
-                        throw new Error("Invalid hello version format");
-                    }
-                } else if (parsedMessage.type === 'peers') {
-                    // Check if list of peers is an array of strings
-                    if (!Array.isArray(parsedMessage.peers)) {
-                        throw new Error("Invalid peers format");
-                    }
+                    hasSaidHello = true;
                 }
 
-                // Handshake Validation Logic
-                if (!hasSaidHello) {
-                    if (parsedMessage.type !== 'hello') {
-                        // They sent a valid JSON message, but it wasn't 'hello'
-                        console.error(`[!] Invalid handshake from ${socket.remoteAddress}`);
-                        sendMessage(socket, {
-                            type: "error",
-                            name: "INVALID_HANDSHAKE",
-                            description: "First message must be a hello message."
-                        });
-                        socket.end();
-                        return; // Stop processing this chunk
-                    } else {
-                        // Handshake is complete!
-                        hasSaidHello = true;
-                        console.log(`[✓] Handshake successful with ${socket.remoteAddress} (Agent: ${parsedMessage.agent || 'Unknown'})`);
-                        continue; 
-                    }
-                }
+                switch (parsedMessage.type) {
+                    case 'hello':
+                        break;
 
-                // Handle messages after handshake
-                if (parsedMessage.type === 'getpeers') {
-                    console.log(`[i] Peer requested our peer list. Sending ${knownPeers.size} peers.`);
-                    sendMessage(socket, {
-                        type: "peers",
-                        peers: Array.from(knownPeers)
-                    });
-                } 
-                else if (parsedMessage.type === 'peers') {
-                    console.log(`[i] Received a list of ${parsedMessage.peers.length} peers.`);
-                    // Add each received peer to our known list
-                    parsedMessage.peers.forEach((peer: string) => {
-                        if (typeof peer === 'string') {
-                            knownPeers.add(peer);
+                    case 'getpeers':
+                        sendMessage(socket, { type: "peers", peers: Array.from(knownPeers) });
+                        break;
+
+                    case 'peers':
+                        parsedMessage.peers.forEach(peer => knownPeers.add(peer));
+                        break;
+
+                    // --- PSET 2: OBJECT EXCHANGE ---
+                    case 'ihaveobject':
+                        // Check if we already have it in our database
+                        const existingObjForIHave = await db.get(parsedMessage.objectid).catch(() => null);
+
+                        // If we don't have it, ask for it!
+                        if (!existingObjForIHave) {
+                            console.log(`[i] Peer has new object ${parsedMessage.objectid}. Requesting it...`);
+                            sendMessage(socket, { type: "getobject", objectid: parsedMessage.objectid });
                         }
-                    });
-                    console.log(`[i] We now know ${knownPeers.size} total peers.`);
-                }                
-            } 
-            catch (e) {
-                // The Error Handler: It wasn't valid JSON!
-                console.error(`Invalid format received from ${socket.remoteAddress}. Disconnecting.`);
-                
-                // Create the exact error object required by the protocol
-                sendMessage(socket, {
-                    type: "error",
-                    name: "INVALID_FORMAT",
-                    description: "Message is not valid JSON or missing required fields."
-                });
+                        break;
+
+                    case 'getobject':
+                        // Check if we have the requested object
+                        const requestedObj = await db.get(parsedMessage.objectid).catch(() => null);
+
+                        // If we have it, send it!
+                        if (requestedObj) {
+                            sendMessage(socket, { type: "object", object: requestedObj });
+                        }
+                        break;
+
+                    case 'object':
+                        const incomingObject = parsedMessage.object;
+                        const newObjectId = getObjectId(incomingObject);
+                        const existingObj = await db.get(newObjectId).catch(() => null);
+
+                        // Ignore objects that are already in your database
+                        if (!existingObj) {
+                            
+                            // VALIDATION CHECK ---
+                            // If the object is a transaction, it must pass the gauntlet before we save it!
+                            if (incomingObject.type === 'transaction') {
+                                try {
+                                    // This will throw an error if anything is wrong
+                                    await validateTransaction(incomingObject);
+                                    console.log(`[+] Transaction ${newObjectId} passed validation!`);
+                                } catch (error: any) {
+                                    console.error(`[!] Invalid transaction received: ${error.message}`);
+                                    
+                                    // Send the specific error message to the node who sent it
+                                    // (error.message will be exactly "INVALID_TX_SIGNATURE", "UNKNOWN_OBJECT", etc.)
+                                    sendMessage(socket, { 
+                                        type: "error", 
+                                        name: error.message, 
+                                        description: "Transaction validation failed." 
+                                    });
+                                    
+                                    // BREAK out of the switch statement! 
+                                    // Do NOT save it to the database, and do NOT gossip it.
+                                    break; 
+                                }
+                            }
+                            // -----------------------------
+
+                            // If it's a valid transaction (or a block, which we assume is valid for now), save it!
+                            console.log(`[+] Saving new object: ${newObjectId}`);
+                            await db.put(newObjectId, incomingObject); 
+                            
+                            // Gossip: Broadcast the knowledge of newly received valid objects
+                            console.log(`[*] Gossiping new object ${newObjectId} to all peers...`);
+                            broadcast({ type: "ihaveobject", objectid: newObjectId }, socket);
+                        }
+                        break;
+                }
+
+            } catch (e) {
+                // Zod will automatically throw an error here if the JSON is malformed, 
+                // missing fields, or has the wrong variable types!
+                console.error(`[!] Validation failed:`, e);
+                sendMessage(socket, { type: "error", name: "INVALID_FORMAT", description: "Invalid message format." });
                 socket.end();
             }
         }
@@ -141,11 +184,19 @@ const server = net.createServer((socket) => {
         console.log(`[-] Connection closed by ${socket.remoteAddress}`);
     });
 
+    // Remove them from the guestbook if they disconnect naturally
+    socket.on('close', () => {
+        console.log(`[-] Connection closed: ${socket.remoteAddress}:${socket.remotePort}`);
+        activeSockets.delete(socket);
+    });
+
+    // Remove them from the guestbook if the connection crashes
     socket.on('error', (err) => {
-        console.error(`[ERROR] Socket error: ${err.message}`);
+        console.error(`[!] Socket error from ${socket.remoteAddress}:${socket.remotePort} - ${err.message}`);
+        activeSockets.delete(socket);
     });
 });
 
 server.listen(PORT, () => {
-    console.log(`🚀 ${NODE_NAME} is running and listening on port ${PORT}...`);
+    console.log(`${NODE_NAME} is running and listening on port ${PORT}...`);
 });
