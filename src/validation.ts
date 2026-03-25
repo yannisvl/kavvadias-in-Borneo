@@ -1,7 +1,7 @@
 import * as forge from 'node-forge';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import canonicalize from 'canonicalize';
-import { type Transaction, type Block, TransactionSchema } from './types';
+import type { Transaction, Block, UTXOSet } from './types';
 import { db, getObjectId } from './object';
 
 /**
@@ -50,7 +50,7 @@ export function verifyTxSignature(transaction: Transaction, pubKeyHex: string, s
  * Validates a transaction's outpoints, signatures, and conservation of value.
  * Throws an Error with the specific protocol error name if it fails.
  */
-export async function validateTransaction(tx: Transaction): Promise<number> {
+export async function validateTransaction(tx: Transaction, utxoSet: UTXOSet): Promise<number> {
     // Coinbase Check
     // "For now, assume that a coinbase transaction is always valid."
     if (tx.height !== undefined && tx.inputs === undefined) {
@@ -70,25 +70,17 @@ export async function validateTransaction(tx: Transaction): Promise<number> {
     // Loop through every input and rigorously check it
     if (tx.inputs) {
         for (const input of tx.inputs) {
-            // Ensure a valid transaction with the given txid exists in your object database
-            const prevTxRaw = await db.get(input.outpoint.txid).catch(() => null);
+            // Create the dictionary key: "txid:index"
+            const utxoKey = `${input.outpoint.txid}:${input.outpoint.index}`;
+
+            // Look it up in our live UTXO memory instead of the database!
+            const prevOutput = utxoSet[utxoKey];
             
-            if (!prevTxRaw) {
-                // If we can't find it, we throw this specific error
-                throw new Error("UNKNOWN_OBJECT"); 
+            // If the output is not present in the UTXO set, send INVALID_TX_OUTPOINT
+            if (!prevOutput) {
+                throw new Error("INVALID_TX_OUTPOINT"); //
             }
 
-            // Parse prevTx if it's a string
-            const prevTxObj = typeof prevTxRaw === "string" ? JSON.parse(prevTxRaw) : prevTxRaw;
-
-            // Ensure the given index is less than the number of outputs
-            if (input.outpoint.index >= prevTxObj.outputs.length) {
-                // If the index is too large, we throw this error
-                throw new Error("INVALID_TX_OUTPOINT"); 
-            }
-
-            // Grab the specific output this input is trying to spend
-            const prevOutput = prevTxObj.outputs[input.outpoint.index];
             sumInputs += prevOutput.value;
 
             // Verify the signature using the pubkey from the previous output
@@ -117,7 +109,7 @@ export async function validateTransaction(tx: Transaction): Promise<number> {
  */
 export async function validateBlock(
     block: Block, 
-    requestMissingTx: (txid: string) => void // NEW: A way to ask the network for help
+    requestMissingTx: (txid: string) => void // A way to ask the network for help
 ): Promise<void> {
     
     // Calculate the blockid (the hash of the entire block object)
@@ -127,6 +119,24 @@ export async function validateBlock(
     // The hash must be strictly less than the target. If it is greater than or equal, it fails!
     if (blockid >= block.T) {
         throw new Error("INVALID_BLOCK_POW"); // 
+    }
+
+    let currentUTXOSet: UTXOSet = {};
+
+    // If this is NOT the genesis block, we must inherit the parent's UTXO set.
+    if (block.previd !== null) {
+        // Look up the parent's UTXO state in the database
+        // Save UTXO of block as "utxo_STATE_blockId"
+        const parentUTXORaw = await db.get(`utxo_STATE_${block.previd}`).catch(() => null);
+        
+        if (!parentUTXORaw) {
+            // "For now, you may assume that the previous block was sent to you beforehand... 
+            // You may ignore the block if you do not have its previous block."
+            throw new Error("UNFINDABLE_OBJECT"); 
+        }
+
+        // Copy the parent's state into our current state
+        currentUTXOSet = typeof parentUTXORaw === "string" ? JSON.parse(parentUTXORaw) : parentUTXORaw;
     }
 
     const missingTxids: string[] = [];
@@ -175,6 +185,7 @@ export async function validateBlock(
 
     for (let i = 0; i < transactions.length; i++) {
         const tx = transactions[i];
+        const txid = block.txids[i]; // We need the txid to create new UTXO keys!
         
         if (!tx) throw new Error("UNFINDABLE_OBJECT");
         
@@ -207,13 +218,38 @@ export async function validateBlock(
 
         // Validate the transaction AND collect its fee!
         try {
-            const txFee = await validateTransaction(tx);
+            const txFee = await validateTransaction(tx, currentUTXOSet);
             // If it's a normal transaction, add its fee to our total block pool
             if (!isCoinbase) {
                 totalBlockFees += txFee;
             }
-        } catch (error) {
-            throw new Error("UNFINDABLE_OBJECT"); //
+        } catch (error: any) {
+            // We can throw the specific error that validateTransaction gives us!
+            throw new Error(error.message); //
+        }
+
+        // Destroy spent bills
+        if (!isCoinbase && tx.inputs) {
+            for (const input of tx.inputs) {
+                const utxoKey = `${input.outpoint.txid}:${input.outpoint.index}`;
+                delete currentUTXOSet[utxoKey]; // Remove from memory
+            }
+        }
+
+        // Print new bills
+        if (tx.outputs) {
+            for (let outIndex = 0; outIndex < tx.outputs.length; outIndex++) {
+                const output = tx.outputs[outIndex];
+                if (!output) continue;
+
+                const newUtxoKey = `${txid}:${outIndex}`;
+                
+                // Add the newly created output to memory
+                currentUTXOSet[newUtxoKey] = {
+                    pubkey: output.pubkey,
+                    value: output.value
+                };
+            }
         }
     }
 
@@ -233,8 +269,8 @@ export async function validateBlock(
         }
     }
 
-    // There can be AT MOST ONE coinbase transaction
-    if (coinbaseCount > 1) {
-        throw new Error("INVALID_BLOCK_COINBASE"); // 
-    }
+    // SAVE THE FINAL UTXO SET ---
+    // If we reach this line, the block is flawless. 
+    // We save the final economy snapshot permanently to the database, tied exactly to this block's ID!
+    await db.put(`utxo_STATE_${blockid}`, currentUTXOSet);
 }

@@ -105,8 +105,19 @@ export const MessageSchema = z.discriminatedUnion('type', [
 ]);
 
 
+// --- UTXO TYPES ---
+// A single Unspent Transaction Output
+export type UTXO = {
+    pubkey: string; //transaction id
+    value: number; // output index
+};
+
+
 // TypeScript Types (so VS Code knows exactly what these look like)
 export type Message = z.infer<typeof MessageSchema>;
 export type NetworkObject = Record<string, any>;
 export type Transaction = z.infer<typeof TransactionSchema>;
 export type Block = z.infer<typeof BlockSchema>;
+
+// The UTXO Set is a dictionary mapping "txid:index" to a UTXO
+export type UTXOSet = Record<string, UTXO>;
