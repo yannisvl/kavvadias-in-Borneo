@@ -2,7 +2,7 @@ import * as net from 'net';
 import canonicalize from 'canonicalize';
 import { MessageSchema } from './types';
 import { db, getObjectId } from './object';
-import { validateTransaction } from './validation';
+import { validateTransaction, validateBlock } from './validation';
 
 const PORT = 18018;
 const NODE_NAME = "kavvadias-in-Borneo";
@@ -157,9 +157,25 @@ const server = net.createServer((socket) => {
                                     break; 
                                 }
                             }
+                            else if (incomingObject.type === 'block') {
+                                try {
+                                    // Use our block validator, and give it the power to ask the network!
+                                    await validateBlock(incomingObject, (txid) => {
+                                        console.log(`[i] Block is missing tx ${txid}. Asking network...`);
+                                        // We use your existing broadcast function to ask everyone!
+                                        broadcast({ type: "getobject", objectid: txid }); 
+                                    });
+                                    
+                                    console.log(`[+] Block ${newObjectId} passed validation!`);
+                                } catch (error: any) {
+                                    console.error(`[!] Invalid block received: ${error.message}`);
+                                    sendMessage(socket, { type: "error", name: error.message, description: "Block validation failed." });
+                                    break; 
+                                }
+                            }
                             // -----------------------------
 
-                            // If it's a valid transaction (or a block, which we assume is valid for now), save it!
+                            // If it's a valid transaction or a block, save it!
                             console.log(`[+] Saving new object: ${newObjectId}`);
                             await db.put(newObjectId, incomingObject); 
                             

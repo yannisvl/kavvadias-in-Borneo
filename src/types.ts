@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const MINING_TARGET = "00000000abc00000000000000000000000000000000000000000000000000000";
+
 // The ID Validator (BLAKE2s hashes are always exactly 64 hexadecimal characters)
 // The network protocol expects hex strings for hashes
 const ObjectIdSchema = z.string().regex(/^[0-9a-f]{64}$/, "Must be a 64-character lowercase hex string");
@@ -35,11 +37,25 @@ export const TransactionSchema = z.object({
     return isCoinbase || isNormal;
 }, { message: "Transaction must be either a valid coinbase or have at least one input." });
 
+
+// The Block Object Schema
+export const BlockSchema = z.object({
+    type: z.literal('block'),
+    txids: z.array(ObjectIdSchema), // Array of exactly 64-char hex strings
+    nonce: z.string().regex(/^[0-9a-f]{64}$/, "Nonce must be a 32-byte hex string"),
+    previd: ObjectIdSchema.nullable(), // Nullable because the Genesis block has a null previd
+    created: z.number().int(), // UNIX timestamp
+    T: z.literal(MINING_TARGET),
+    miner: z.string().max(128).optional(),
+    note: z.string().max(128).optional(),
+    studentids: z.array(z.string().max(128)).max(10).optional()
+});
+
+
 // Update the ObjectMessageSchema to use this new rule!
 export const ObjectMessageSchema = z.object({
     type: z.literal('object'),
-    // For now, an object must be a valid Transaction
-    object: TransactionSchema 
+    object: z.union([TransactionSchema, BlockSchema])
 });
 
 
@@ -88,7 +104,9 @@ export const MessageSchema = z.discriminatedUnion('type', [
     ObjectMessageSchema
 ]);
 
+
 // TypeScript Types (so VS Code knows exactly what these look like)
 export type Message = z.infer<typeof MessageSchema>;
 export type NetworkObject = Record<string, any>;
 export type Transaction = z.infer<typeof TransactionSchema>;
+export type Block = z.infer<typeof BlockSchema>;
