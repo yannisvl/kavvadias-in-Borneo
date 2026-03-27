@@ -57,9 +57,6 @@ export async function validateTransaction(tx: Transaction, utxoSet?: UTXOSet): P
         return 0; // It passes instantly!
     }
 
-    // Default to empty UTXO set if not provided
-    const currentUTXOSet = utxoSet ?? {};
-
     let sumOutputs = 0;
     let sumInputs = 0;
 
@@ -75,16 +72,39 @@ export async function validateTransaction(tx: Transaction, utxoSet?: UTXOSet): P
             let prevOutput;
 
             // CHECK IF UTXOSET EXISTS BEFORE TRYING TO USE IT!
-            if (utxoSet) {
+            if (utxoSet !== undefined) {
                 // Case 1: Block Validation (We have a UTXO set)
                 const utxoKey = `${input.outpoint.txid}:${input.outpoint.index}`;
                 prevOutput = utxoSet[utxoKey]; 
+
+                // If we are inside a block and the UTXO is missing, 
+                // we must check WHY it's missing to give the correct error.
+                if (!prevOutput) {
+                    const txExists = await db.get(input.outpoint.txid).catch(() => null);
+                    if (!txExists) {
+                        // The parent transaction doesn't even exist in our DB
+                        throw new Error("UNKNOWN_OBJECT"); 
+                    } else {
+                        // The parent exists, but the output isn't in the UTXO set (Double Spend!)
+                        throw new Error("INVALID_TX_OUTPOINT"); 
+                    }
+                }
             } else {
                 // Case 2: Loose Transaction in index.ts (We must look in the DB)
                 const prevTxRaw = await db.get(input.outpoint.txid).catch(() => null);
-                if (!prevTxRaw) throw new Error("INVALID_TX_OUTPOINT"); 
+                
+                if (!prevTxRaw) {
+                    // Parent transaction not found in DB
+                    throw new Error("UNKNOWN_OBJECT"); 
+                }
                 
                 const prevTx = typeof prevTxRaw === "string" ? JSON.parse(prevTxRaw) : prevTxRaw;
+                
+                // Ensure the parent transaction actually has the index we are trying to spend
+                if (!prevTx.outputs || !prevTx.outputs[input.outpoint.index]) {
+                    throw new Error("INVALID_TX_OUTPOINT");
+                }
+
                 prevOutput = prevTx.outputs[input.outpoint.index];
             }
 
@@ -141,8 +161,8 @@ export async function validateBlock(
         const parentUTXORaw = await db.get(`utxo_STATE_${block.previd}`).catch(() => null);
         
         if (!parentUTXORaw) {
-            // "For now, you may assume that the previous block was sent to you beforehand... 
-            // You may ignore the block if you do not have its previous block."
+            // "For now, we may assume that the previous block was sent to us beforehand... 
+            // We may ignore the block if we do not have its previous block."
             throw new Error("UNFINDABLE_OBJECT"); 
         }
 
@@ -219,7 +239,7 @@ export async function validateBlock(
             coinbaseOutputValue = tx.outputs[0]?.value ?? 0;
 
         } else {
-            // Check for premature coinbase spending
+            // Check for premature coinbase spending inside the same Block!
             if (coinbaseTxid !== null && tx.inputs) {
                 for (const input of tx.inputs) {
                     if (input.outpoint.txid === coinbaseTxid) throw new Error("INVALID_TX_OUTPOINT"); //

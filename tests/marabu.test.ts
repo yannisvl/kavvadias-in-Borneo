@@ -71,6 +71,6 @@ describe("=== PSET 2: Transaction Validation ===", () => {
         fakeTx.inputs[0].outpoint.txid = "0000000000000000000000000000000000000000000000000000000000000000";
 
         // It must throw the exact protocol error
-        await expect(validateTransaction(fakeTx as any)).rejects.toThrow("INVALID_TX_OUTPOINT");
+        await expect(validateTransaction(fakeTx as any)).rejects.toThrow("UNKNOWN_OBJECT");
     });
 });

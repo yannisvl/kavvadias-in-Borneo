@@ -18,7 +18,6 @@ const knownPeers = new Set<string>([
 // This keeps track of the actual, live network pipes currently connected to us
 const activeSockets = new Set<net.Socket>();
 
-const knownTypes = ["hello", "getpeers", "peers", "error"];
 
 // Helper function to send messages in Canonical JSON format
 function sendMessage(socket: net.Socket, messageObj: any) {
@@ -162,7 +161,7 @@ const server = net.createServer((socket) => {
                                     // Use our block validator, and give it the power to ask the network!
                                     await validateBlock(incomingObject, (txid) => {
                                         console.log(`[i] Block is missing tx ${txid}. Asking network...`);
-                                        // We use your existing broadcast function to ask everyone!
+                                        // We use the existing broadcast function to ask everyone!
                                         broadcast({ type: "getobject", objectid: txid }); 
                                     });
                                     
@@ -170,6 +169,23 @@ const server = net.createServer((socket) => {
                                 } catch (error: any) {
                                     console.error(`[!] Invalid block received: ${error.message}`);
                                     sendMessage(socket, { type: "error", name: error.message, description: "Block validation failed." });
+
+                                    // If the error was caused by a transaction, we MUST also send UNFINDABLE_OBJECT
+                                    const transactionErrors = [
+                                        "INVALID_TX_OUTPOINT", 
+                                        "INVALID_TX_SIGNATURE", 
+                                        "INVALID_TX_CONSERVATION", 
+                                        "UNKNOWN_OBJECT"
+                                    ];
+                                    
+                                    if (transactionErrors.includes(error.message)) {
+                                        sendMessage(socket, { 
+                                            type: "error", 
+                                            name: "UNFINDABLE_OBJECT", 
+                                            description: "Block contains an invalid transaction." 
+                                        });
+                                    }
+                                    
                                     break; 
                                 }
                             }
