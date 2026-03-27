@@ -50,12 +50,15 @@ export function verifyTxSignature(transaction: Transaction, pubKeyHex: string, s
  * Validates a transaction's outpoints, signatures, and conservation of value.
  * Throws an Error with the specific protocol error name if it fails.
  */
-export async function validateTransaction(tx: Transaction, utxoSet: UTXOSet): Promise<number> {
+export async function validateTransaction(tx: Transaction, utxoSet?: UTXOSet): Promise<number> {
     // Coinbase Check
     // "For now, assume that a coinbase transaction is always valid."
     if (tx.height !== undefined && tx.inputs === undefined) {
         return 0; // It passes instantly!
     }
+
+    // Default to empty UTXO set if not provided
+    const currentUTXOSet = utxoSet ?? {};
 
     let sumOutputs = 0;
     let sumInputs = 0;
@@ -67,26 +70,34 @@ export async function validateTransaction(tx: Transaction, utxoSet: UTXOSet): Pr
         }
     }
 
-    // Loop through every input and rigorously check it
     if (tx.inputs) {
         for (const input of tx.inputs) {
-            // Create the dictionary key: "txid:index"
-            const utxoKey = `${input.outpoint.txid}:${input.outpoint.index}`;
+            let prevOutput;
 
-            // Look it up in our live UTXO memory instead of the database!
-            const prevOutput = utxoSet[utxoKey];
-            
-            // If the output is not present in the UTXO set, send INVALID_TX_OUTPOINT
+            // CHECK IF UTXOSET EXISTS BEFORE TRYING TO USE IT!
+            if (utxoSet) {
+                // Case 1: Block Validation (We have a UTXO set)
+                const utxoKey = `${input.outpoint.txid}:${input.outpoint.index}`;
+                prevOutput = utxoSet[utxoKey]; 
+            } else {
+                // Case 2: Loose Transaction in index.ts (We must look in the DB)
+                const prevTxRaw = await db.get(input.outpoint.txid).catch(() => null);
+                if (!prevTxRaw) throw new Error("INVALID_TX_OUTPOINT"); 
+                
+                const prevTx = typeof prevTxRaw === "string" ? JSON.parse(prevTxRaw) : prevTxRaw;
+                prevOutput = prevTx.outputs[input.outpoint.index];
+            }
+
+            // If we still can't find the output in either place, it's invalid
             if (!prevOutput) {
-                throw new Error("INVALID_TX_OUTPOINT"); //
+                throw new Error("INVALID_TX_OUTPOINT"); 
             }
 
             sumInputs += prevOutput.value;
 
-            // Verify the signature using the pubkey from the previous output
+            // Verify the signature
             const isValidSig = verifyTxSignature(tx, prevOutput.pubkey, input.sig);
             if (!isValidSig) {
-                // If it is not a valid signature given the public key, throw this error
                 throw new Error("INVALID_TX_SIGNATURE"); 
             }
         }

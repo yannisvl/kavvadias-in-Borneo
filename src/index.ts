@@ -71,7 +71,7 @@ const server = net.createServer((socket) => {
             if (messageString.trim() === "") continue;
 
             try {
-                // Structural Validation (Replaces all old if/else checks!)
+                // Structural Validation
                 const rawJson = JSON.parse(messageString);
                 const parsedMessage = MessageSchema.parse(rawJson); // Zod checks the rules here!
 
@@ -104,7 +104,7 @@ const server = net.createServer((socket) => {
                         parsedMessage.peers.forEach(peer => knownPeers.add(peer));
                         break;
 
-                    // --- PSET 2: OBJECT EXCHANGE ---
+                    // OBJECT EXCHANGE ---
                     case 'ihaveobject':
                         // Check if we already have it in our database
                         const existingObjForIHave = await db.get(parsedMessage.objectid).catch(() => null);

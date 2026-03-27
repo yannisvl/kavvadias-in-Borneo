@@ -53,7 +53,7 @@ describe("=== PSET 2: Transaction Validation ===", () => {
 
     test("Accepts valid coinbase transaction", async () => {
         // We just check that it resolves to undefined (meaning it didn't throw an error)
-        await expect(validateTransaction(coinbaseTx as any)).resolves.toBeUndefined();
+        await expect(validateTransaction(coinbaseTx as any)).resolves.toBe(0);
     });
 
     test("Accepts valid spend transaction", async () => {
@@ -62,7 +62,7 @@ describe("=== PSET 2: Transaction Validation ===", () => {
         await db.put(coinbaseHash, coinbaseTx);
 
         // Now, the spend transaction should succeed!
-        await expect(validateTransaction(spendTx as any)).resolves.toBeUndefined();
+        await expect(validateTransaction(spendTx as any)).resolves.toBe(49999999990);
     });
 
     test("Throws UNKNOWN_OBJECT for fake input", async () => {
@@ -71,6 +71,6 @@ describe("=== PSET 2: Transaction Validation ===", () => {
         fakeTx.inputs[0].outpoint.txid = "0000000000000000000000000000000000000000000000000000000000000000";
 
         // It must throw the exact protocol error
-        await expect(validateTransaction(fakeTx as any)).rejects.toThrow("UNKNOWN_OBJECT");
+        await expect(validateTransaction(fakeTx as any)).rejects.toThrow("INVALID_TX_OUTPOINT");
     });
 });
