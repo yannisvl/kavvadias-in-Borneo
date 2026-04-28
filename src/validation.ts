@@ -140,7 +140,7 @@ export async function validateTransaction(tx: Transaction, utxoSet?: UTXOSet): P
  */
 export async function validateBlock(
     block: Block, 
-    requestMissingTx: (txid: string) => void // A way to ask the network for help
+    requestMissingObject: (obj: string) => void // A way to ask the network for help
 ): Promise<void> {
     
     // Calculate the blockid (the hash of the entire block object)
@@ -152,22 +152,65 @@ export async function validateBlock(
         throw new Error("INVALID_BLOCK_POW"); // 
     }
 
+    // TIMESTAMP CHECK, Must not be in the future
+    const currentTime = Math.floor(Date.now() / 1000);
+    if (block.created > currentTime) {
+        throw new Error("INVALID_BLOCK_TIMESTAMP");
+    }
+
     let currentUTXOSet: UTXOSet = {};
+    let blockHeight = 0; // Genesis block defaults to height 0
 
     // If this is NOT the genesis block, we must inherit the parent's UTXO set.
     if (block.previd !== null) {
-        // Look up the parent's UTXO state in the database
-        // Save UTXO of block as "utxo_STATE_blockId"
-        const parentUTXORaw = await db.get(`utxo_STATE_${block.previd}`).catch(() => null);
+        // Try to load the parent's UTXO state
+        let parentUTXORaw = await db.get(`utxo_STATE_${block.previd}`).catch(() => null);
         
         if (!parentUTXORaw) {
-            // "For now, we may assume that the previous block was sent to us beforehand... 
-            // We may ignore the block if we do not have its previous block."
-            throw new Error("UNFINDABLE_OBJECT"); 
+            // We don't have the validated parent! Ask the network for it.
+            requestMissingObject(block.previd);
+            
+            // The Polling Loop (Patience for deep chains) ---
+            // Instead of sleeping once, we check the database every 500ms 
+            // for up to 10 seconds. This gives index.ts enough time to fetch 
+            // and validate multiple missing parents recursively!
+            let retries = 20; 
+            while (retries > 0 && !parentUTXORaw) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                parentUTXORaw = await db.get(`utxo_STATE_${block.previd}`).catch(() => null);
+                retries--;
+            }
+            
+            if (!parentUTXORaw) {
+                // If it's still missing or was invalid, this block is unfindable
+                throw new Error("UNFINDABLE_OBJECT"); 
+            }
         }
 
         // Copy the parent's state into our current state
         currentUTXOSet = typeof parentUTXORaw === "string" ? JSON.parse(parentUTXORaw) : parentUTXORaw;
+
+        // TIMESTAMP CHECK, Must not be in the future
+        const parentRaw = await db.get(block.previd).catch(() => null);
+        if (!parentRaw) throw new Error("UNFINDABLE_OBJECT");
+        const parentBlock: Block = typeof parentRaw === "string" ? JSON.parse(parentRaw) : parentRaw;
+
+        if (block.created <= parentBlock.created) {
+            throw new Error("INVALID_BLOCK_TIMESTAMP");
+        }
+
+        // HEIGHT CALCULATION
+        const parentHeightRaw = await db.get(`height_${block.previd}`).catch(() => null);
+        if (parentHeightRaw === null) throw new Error("UNFINDABLE_OBJECT");
+        blockHeight = parseInt(parentHeightRaw as string) + 1;
+    } 
+    else {
+        // --- PSET 4: FAKE GENESIS CHECK ---
+        // If previd is null, it MUST be the exact official Marabu genesis block!
+        const OFFICIAL_GENESIS_ID = "00000000522473196b73bc619a8b18472c4cb4c6caf785a13fa32aaae7222ff6";
+        if (blockid !== OFFICIAL_GENESIS_ID) {
+            throw new Error("INVALID_GENESIS");
+        }
     }
 
     const missingTxids: string[] = [];
@@ -183,7 +226,7 @@ export async function validateBlock(
     // If we are missing anything, ask the network!
     if (missingTxids.length > 0) {
         for (const txid of missingTxids) {
-            requestMissingTx(txid); // Broadcast the 'getobject' message
+            requestMissingObject(txid); // Broadcast the 'getobject' message
         }
 
         // We must pause and wait for peers to send us the objects.
@@ -225,7 +268,12 @@ export async function validateBlock(
         if (isCoinbase) {
             coinbaseCount++;
             
-            if (i !== 0) throw new Error("INVALID_BLOCK_COINBASE"); //
+            if (i !== 0) throw new Error("INVALID_BLOCK_COINBASE");
+
+            // COINBASE HEIGHT MATCH
+            if (tx.height !== blockHeight) {
+                throw new Error("INVALID_BLOCK_COINBASE");
+            }
 
             const txid = block.txids[i];
             if (txid !== undefined) coinbaseTxid = txid;
@@ -300,8 +348,28 @@ export async function validateBlock(
         }
     }
 
-    // SAVE THE FINAL UTXO SET ---
+    // SAVE THE FINAL UTXO SET and height---
     // If we reach this line, the block is flawless. 
     // We save the final economy snapshot permanently to the database, tied exactly to this block's ID!
     await db.put(`utxo_STATE_${blockid}`, currentUTXOSet);
+    await db.put(`height_${blockid}`, blockHeight.toString())
+
+    // THE LONGEST CHAIN RULE
+    // Fetch our current absolute best tip from the database
+    const currentTipRaw = await db.get('longest_chain_tip').catch(() => null);
+    let currentTipHeight = -1; // If we don't have a tip yet, ANY valid block beats it
+
+    if (currentTipRaw) {
+        const currentTipHeightRaw = await db.get(`height_${currentTipRaw}`).catch(() => null);
+        if (currentTipHeightRaw !== null) {
+            currentTipHeight = parseInt(currentTipHeightRaw as string);
+        }
+    }
+
+    // Consensus! If this new block is strictly taller, it is the new tip of our chain.
+    // (If there is a tie, we stick with the one we saw first).
+    if (blockHeight > currentTipHeight) {
+        await db.put('longest_chain_tip', blockid);
+        console.log(`Consensus Update: New longest chain tip! Block ${blockid.substring(0,8)}... at height ${blockHeight}`);
+    }
 }

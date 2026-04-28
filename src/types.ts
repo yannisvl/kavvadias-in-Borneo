@@ -51,6 +51,14 @@ export const BlockSchema = z.object({
     studentids: z.array(z.string().max(128)).max(10).optional()
 });
 
+export const GetChainTipMessageSchema = z.object({
+    type: z.literal('getchaintip')
+});
+
+export const ChainTipMessageSchema = z.object({
+    type: z.literal('chaintip'),
+    blockid: ObjectIdSchema
+});
 
 // Update the ObjectMessageSchema to use this new rule!
 export const ObjectMessageSchema = z.object({
@@ -101,7 +109,9 @@ export const MessageSchema = z.discriminatedUnion('type', [
     ErrorMessageSchema,
     IHaveObjectMessageSchema,
     GetObjectMessageSchema,
-    ObjectMessageSchema
+    ObjectMessageSchema,
+    GetChainTipMessageSchema,
+    ChainTipMessageSchema
 ]);
 
 

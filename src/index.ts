@@ -56,6 +56,9 @@ const server = net.createServer((socket) => {
     sendMessage(socket, {
         type: "getpeers"
     });
+    sendMessage(socket, {
+        type: "getchaintip"
+    });
 
     socket.on('data', async (data) => {
         // Add the newly arrived chunk of data to our waiting room
@@ -159,10 +162,9 @@ const server = net.createServer((socket) => {
                             else if (incomingObject.type === 'block') {
                                 try {
                                     // Use our block validator, and give it the power to ask the network!
-                                    await validateBlock(incomingObject, (txid) => {
-                                        console.log(`[i] Block is missing tx ${txid}. Asking network...`);
-                                        // We use the existing broadcast function to ask everyone!
-                                        broadcast({ type: "getobject", objectid: txid }); 
+                                    await validateBlock(incomingObject, (missingId) => {
+                                        console.log(`[i] Block is missing object ${missingId}. Asking network...`);
+                                        broadcast({ type: "getobject", objectid: missingId }); 
                                     });
                                     
                                     console.log(`[+] Block ${newObjectId} passed validation!`);
@@ -199,6 +201,30 @@ const server = net.createServer((socket) => {
                             console.log(`[*] Gossiping new object ${newObjectId} to all peers...`);
                             broadcast({ type: "ihaveobject", objectid: newObjectId }, socket);
                         }
+                        break;
+
+                    case 'getchaintip':
+                        // If someone asks, grab our tip from the DB and send it!
+                        const currentTip = await db.get('longest_chain_tip').catch(() => null);
+                        if (currentTip) {
+                            sendMessage(socket, { type: "chaintip", blockid: currentTip });
+                        }
+                        break;
+
+                    case 'chaintip':
+                        console.log(`[i] Peer advertises chain tip: ${parsedMessage.blockid}`);
+                        
+                        // Let's see if we already know about this block
+                        const existingTip = await db.get(parsedMessage.blockid).catch(() => null);
+                        
+                        // If we don't have it, ask them for it!
+                        if (!existingTip) {
+                            console.log(`[i] We don't have this tip. Requesting it...`);
+                            sendMessage(socket, { type: "getobject", objectid: parsedMessage.blockid });
+                        }
+                        // NOTE: If we get the object, our "case 'object':" will automatically
+                        // trigger validateBlock, which will recursively fetch ALL missing parents,
+                        // validate the whole chain, and automatically update our longest_chain_tip!
                         break;
                 }
 
