@@ -176,7 +176,7 @@ export async function validateBlock(
             // and validate multiple missing parents recursively!
             let retries = 20; 
             while (retries > 0 && !parentUTXORaw) {
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(resolve => setTimeout(resolve, 200));
                 parentUTXORaw = await db.get(`utxo_STATE_${block.previd}`).catch(() => null);
                 retries--;
             }
@@ -229,16 +229,27 @@ export async function validateBlock(
             requestMissingObject(txid); // Broadcast the 'getobject' message
         }
 
-        // We must pause and wait for peers to send us the objects.
-        // Let's give them 3 seconds to respond and save it to our database.
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // Fast Polling Loop: Wait up to 2 seconds for missing transactions
+        let txRetries = 10;
+        let allFound = false;
+        while (txRetries > 0 && !allFound) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+            allFound = true;
+            for (const txid of missingTxids) {
+                const txRaw = await db.get(txid).catch(() => null);
+                if (!txRaw) {
+                    allFound = false;
+                    break; // One is still missing, stop checking and sleep again
+                }
+            }
+            txRetries--;
+        }
 
-        // Second pass: check the database ONE MORE TIME
+        // Final check after the 2-second deadline
         for (const txid of missingTxids) {
             const txRaw = await db.get(txid).catch(() => null);
             if (!txRaw) {
-                // If it's STILL missing, the block is invalid!
-                throw new Error("UNFINDABLE_OBJECT"); //
+                throw new Error("UNFINDABLE_OBJECT"); 
             }
         }
     }

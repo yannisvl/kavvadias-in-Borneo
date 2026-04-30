@@ -1,8 +1,29 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeAll } from "bun:test";
 import { db, getObjectId } from "../src/object";
 import { validateBlock } from "../src/validation";
 import { BlockSchema } from "../src/types";
 import type { Block, Transaction } from "../src/types";
+
+
+// The official Genesis ID
+const OFFICIAL_GENESIS_ID = "00000000522473196b73bc619a8b18472c4cb4c6caf785a13fa32aaae7222ff6";
+
+beforeAll(async () => {
+    // Seed the DB with a mock Genesis state so child blocks can be tested
+    await db.put(OFFICIAL_GENESIS_ID, {
+        "T": "00000000abc00000000000000000000000000000000000000000000000000000",
+        "created": 1771159355,
+        "miner": "Marabu",
+        "nonce": "00dd82159556175752d9ba7349df67bddd237b59183747383f7b720e85c32347",
+        "note": "Financial Times 2026-02-13: Crypto's battle with the banks is splitting Trump's base",
+        "previd": null,
+        "txids": [],
+        "type": "block"
+    });
+    await db.put(`utxo_STATE_${OFFICIAL_GENESIS_ID}`, {});
+    await db.put(`height_${OFFICIAL_GENESIS_ID}`, "0");
+});
+
 
 // A dummy network function that never finds the missing objects
 const dummyNetworkFail = async (txid: string) => {};
@@ -12,7 +33,7 @@ const makeBypassBlock = (txids: string[]): Block => ({
     T: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" as any, // Bypass Zod strict literal for deep testing
     created: Math.floor(Date.now() / 1000),
     nonce: "0000000000000000000000000000000000000000000000000000000000000000",
-    previd: null, // Treat as Genesis for isolated UTXO testing
+    previd: OFFICIAL_GENESIS_ID, // Treat as Genesis for isolated UTXO testing
     txids: txids,
     type: "block"
 });
