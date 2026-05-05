@@ -362,8 +362,18 @@ export async function validateBlock(
     // SAVE THE FINAL UTXO SET and height---
     // If we reach this line, the block is flawless. 
     // We save the final economy snapshot permanently to the database, tied exactly to this block's ID!
+    
+    // --- SAVE EVERYTHING IN STRICT ORDER ---
+    // 1. Save the raw block object so child timestamp checks can find it instantly
+    await db.put(blockid, block);
+
+    // 2. Save the height
+    await db.put(`height_${blockid}`, blockHeight.toString());
+
+    // 3. Save the UTXO state LAST. That way, if a child block's polling loop
+    // detects the UTXO state, it is mathematically guaranteed that the height
+    // and raw block are already in the database!
     await db.put(`utxo_STATE_${blockid}`, currentUTXOSet);
-    await db.put(`height_${blockid}`, blockHeight.toString())
 
     // THE LONGEST CHAIN RULE
     // Fetch our current absolute best tip from the database

@@ -31,11 +31,25 @@ export const TransactionSchema = z.object({
     // Coinbase transactions have a height instead of inputs
     height: z.number().int().nonnegative().optional()
 }).refine(tx => {
-    // Custom validation: It must be EITHER a normal tx (has inputs) OR a coinbase tx (has height)
-    const isCoinbase = tx.height !== undefined && tx.inputs === undefined;
-    const isNormal = tx.inputs !== undefined && tx.inputs.length > 0 && tx.height === undefined;
-    return isCoinbase || isNormal;
-}, { message: "Transaction must be either a valid coinbase or have at least one input." });
+    // --- PSET 5 PART 1: Prevent duplicate inputs ---
+    if (!tx.inputs) return true; // Coinbase txs have no inputs
+    
+    const seenOutpoints = new Set<string>();
+    for (const input of tx.inputs) {
+        const outpointKey = `${input.outpoint.txid}:${input.outpoint.index}`;
+        if (seenOutpoints.has(outpointKey)) {
+            return false; // Duplicate found! Zod will reject it.
+        }
+        seenOutpoints.add(outpointKey);
+    }
+    return true;
+}, { message: "Transaction cannot contain duplicate inputs" });
+
+
+// Helper for PSET 5: ASCII printable characters (32-126) up to 128 chars
+const AsciiPrintableSchema = z.string()
+    .max(128)
+    .regex(/^[\x20-\x7E]*$/, "Must contain only ASCII printable characters");
 
 
 // The Block Object Schema
@@ -46,9 +60,9 @@ export const BlockSchema = z.object({
     previd: ObjectIdSchema.nullable(), // Nullable because the Genesis block has a null previd
     created: z.number().int(), // UNIX timestamp
     T: z.literal(MINING_TARGET),
-    miner: z.string().max(128).optional(),
-    note: z.string().max(128).optional(),
-    studentids: z.array(z.string().max(128)).max(10).optional()
+    miner: AsciiPrintableSchema.optional(),
+    note: AsciiPrintableSchema.optional(),
+    studentids: z.array(AsciiPrintableSchema).max(10).optional()
 });
 
 export const GetChainTipMessageSchema = z.object({
