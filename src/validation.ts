@@ -3,6 +3,9 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import canonicalize from 'canonicalize';
 import type { Transaction, Block, UTXOSet } from './types';
 import { db, getObjectId } from './object';
+import { reloadMempool } from "./mempool";
+
+export let longestChainTip: string | null = null;
 
 /**
  * Verifies a single Ed25519 signature within a transaction.
@@ -378,7 +381,7 @@ export async function validateBlock(
     // THE LONGEST CHAIN RULE
     // Fetch our current absolute best tip from the database
     const currentTipRaw = await db.get('longest_chain_tip').catch(() => null);
-    let currentTipHeight = -1; // If we don't have a tip yet, ANY valid block beats it
+    let currentTipHeight = -1; 
 
     if (currentTipRaw) {
         const currentTipHeightRaw = await db.get(`height_${currentTipRaw}`).catch(() => null);
@@ -388,9 +391,16 @@ export async function validateBlock(
     }
 
     // Consensus! If this new block is strictly taller, it is the new tip of our chain.
-    // (If there is a tie, we stick with the one we saw first).
     if (blockHeight > currentTipHeight) {
+        // Capture the old tip before we overwrite it!
+        const oldTip = currentTipRaw; 
+        
         await db.put('longest_chain_tip', blockid);
+        longestChainTip = blockid; 
+        
         console.log(`Consensus Update: New longest chain tip! Block ${blockid.substring(0,8)}... at height ${blockHeight}`);
+        
+        // --- PSET 5: Rebuild the mempool, rescuing any orphans! ---
+        await reloadMempool(oldTip, blockid);
     }
 }

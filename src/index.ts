@@ -1,8 +1,9 @@
 import * as net from 'net';
 import canonicalize from 'canonicalize';
-import { MessageSchema } from './types';
+import { MessageSchema, type Transaction } from './types';
 import { db, getObjectId } from './object';
 import { validateTransaction, validateBlock } from './validation';
+import { initializeMempool, mempool, processMempoolTransaction } from "./mempool";
 
 const PORT = 18018;
 const NODE_NAME = "kavvadias-in-Borneo";
@@ -27,7 +28,7 @@ function sendMessage(socket: net.Socket, messageObj: any) {
     }
 }
 
-function broadcast(message: any, senderToExclude?: net.Socket) {
+export function broadcast(message: any, senderToExclude?: net.Socket) {
     for (const peerSocket of activeSockets) {
         // We don't want to send it back to the peer who just sent it to us!
         if (peerSocket !== senderToExclude) {
@@ -140,9 +141,10 @@ const server = net.createServer((socket) => {
                             // If the object is a transaction, it must pass the gauntlet before we save it!
                             if (incomingObject.type === 'transaction') {
                                 try {
-                                    // This will throw an error if anything is wrong
-                                    await validateTransaction(incomingObject);
-                                    console.log(`[+] Transaction ${newObjectId} passed validation!`);
+                                    await processMempoolTransaction(incomingObject as Transaction, newObjectId);
+                    
+                                    // If it succeeded without throwing an error, gossip it to peers!
+                                    broadcast({ type: "ihaveobject", objectid: newObjectId }, socket);
                                 } catch (error: any) {
                                     console.error(`[!] Invalid transaction received: ${error.message}`);
                                     
@@ -151,7 +153,7 @@ const server = net.createServer((socket) => {
                                     sendMessage(socket, { 
                                         type: "error", 
                                         name: error.message, 
-                                        description: "Transaction validation failed." 
+                                        description: "Mempool validation failed" 
                                     });
                                     
                                     // BREAK out of the switch statement! 
@@ -226,6 +228,38 @@ const server = net.createServer((socket) => {
                         // trigger validateBlock, which will recursively fetch ALL missing parents,
                         // validate the whole chain, and automatically update our longest_chain_tip!
                         break;
+
+                    case "getmempool": {
+                        // A peer wants to see our waiting room. 
+                        // We just send them our list of txids!
+                        const reply = {
+                            type: "mempool",
+                            txids: mempool 
+                        };
+                        sendMessage(socket, reply);
+                        break;
+                    }
+
+                    case "mempool": {
+                        // A peer just sent us their waiting room.
+                        // We must request the transactions we are missing.
+                        const mempoolTxids = parsedMessage.txids;
+                        
+                        for (const txid of mempoolTxids) {
+                            try {
+                                // Check if we already have it in our database
+                                await db.get(txid);
+                            } catch (e) {
+                                // If db.get throws an error, it means we don't have it!
+                                // Ask the peer to send us the full transaction object.
+                                sendMessage(socket, {
+                                    type: "getobject",
+                                    objectid: txid
+                                });
+                            }
+                        }
+                        break;
+                    }
                 }
 
             } catch (e) {
@@ -257,4 +291,10 @@ const server = net.createServer((socket) => {
 
 server.listen(PORT, () => {
     console.log(`${NODE_NAME} is running and listening on port ${PORT}...`);
+
+    // --- PSET 5: Initialize the Mempool ---
+    // Wait a second for initial peer connections to establish before asking for mempools
+    setTimeout(async () => {
+        await initializeMempool();
+    }, 1000);
 });

@@ -92,6 +92,15 @@ export const GetObjectMessageSchema = z.object({
     objectid: ObjectIdSchema
 });
 
+export const GetMempoolSchema = z.object({
+    type: z.literal("getmempool")
+}).strict();
+
+export const MempoolMessageSchema = z.object({
+    type: z.literal("mempool"),
+    txids: z.array(z.string().regex(/^[0-9a-f]{64}$/))
+}).strict();
+
 // Messages from PSET 1
 export const HelloMessageSchema = z.object({
     type: z.literal('hello'),
@@ -125,7 +134,9 @@ export const MessageSchema = z.discriminatedUnion('type', [
     GetObjectMessageSchema,
     ObjectMessageSchema,
     GetChainTipMessageSchema,
-    ChainTipMessageSchema
+    ChainTipMessageSchema,
+    GetMempoolSchema,
+    MempoolMessageSchema
 ]);
 
 
