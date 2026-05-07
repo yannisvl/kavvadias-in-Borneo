@@ -43,12 +43,16 @@ export async function initializeMempool() {
 
 
 export async function processMempoolTransaction(tx: Transaction, txid: string) {
+
+    // Guarantee mempoolState is never undefined before we try to read it!
+    if (!mempoolState) mempoolState = {};
+
     // 1. Skip if we already have it in the waiting room
     if (mempool.includes(txid)) return;
 
     // 2. Reject Coinbase Transactions
     if (!tx.inputs || tx.inputs.length === 0 || tx.height !== undefined) {
-        throw new Error("INVALID_FORMAT"); 
+        throw new Error("COINBASE_REJECT");
     }
 
     let inputSum = 0;
@@ -134,9 +138,12 @@ export async function reloadMempool(oldTip: string | null, newTip: string) {
 
     // 4. Load the UTXO state of the NEW longest chain tip
     const tipStateRaw = await db.get(`utxo_STATE_${newTip}`).catch(() => null);
-    if (!tipStateRaw) return;
-
-    mempoolState = typeof tipStateRaw === "string" ? JSON.parse(tipStateRaw) : tipStateRaw;
+    if (tipStateRaw) {
+        mempoolState = typeof tipStateRaw === "string" ? JSON.parse(tipStateRaw) : tipStateRaw;
+        if (!mempoolState) mempoolState = {}; 
+    } else {
+        mempoolState = {}; 
+    }
 
     // 5. Re-evaluate every transaction against the new reality
     for (const txid of txsToReevaluate) {

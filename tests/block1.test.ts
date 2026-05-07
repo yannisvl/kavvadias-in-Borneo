@@ -73,7 +73,7 @@ test("Section 3c: Missing transaction throws UNFINDABLE_OBJECT", async () => {
 
     // Our dummy network won't find it, so it should throw!
     expect(validateBlock(unfindableBlock, dummyNetworkFail)).rejects.toThrow("UNFINDABLE_OBJECT");
-});
+}, 10000);
 
 test("Section 3f: Greedy Coinbase throws INVALID_BLOCK_COINBASE", async () => {
     // 1. Create a greedy coinbase asking for 100 bu instead of 50 bu

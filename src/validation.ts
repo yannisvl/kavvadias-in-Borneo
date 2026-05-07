@@ -233,7 +233,7 @@ export async function validateBlock(
         }
 
         // Fast Polling Loop: Wait up to 2 seconds for missing transactions
-        let txRetries = 10;
+        let txRetries = 30;
         let allFound = false;
         while (txRetries > 0 && !allFound) {
             await new Promise(resolve => setTimeout(resolve, 200));

@@ -158,7 +158,7 @@ test("Test Case 3d: Coinbase transaction is rejected from mempool", async () => 
     };
 
     // The bouncer should throw INVALID_FORMAT because coinbase txs don't have inputs
-    expect(processMempoolTransaction(coinbaseTx as any, "txid")).rejects.toThrow("INVALID_FORMAT");
+    expect(processMempoolTransaction(coinbaseTx as any, "txid")).rejects.toThrow("COINBASE_REJECT");
     
     // The waiting room should remain empty
     expect(mempool.length).toBe(0);

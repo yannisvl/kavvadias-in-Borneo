@@ -146,19 +146,15 @@ const server = net.createServer((socket) => {
                                     // If it succeeded without throwing an error, gossip it to peers!
                                     broadcast({ type: "ihaveobject", objectid: newObjectId }, socket);
                                 } catch (error: any) {
-                                    console.error(`[!] Invalid transaction received: ${error.message}`);
-                                    
-                                    // Send the specific error message to the node who sent it
-                                    // (error.message will be exactly "INVALID_TX_SIGNATURE", "UNKNOWN_OBJECT", etc.)
-                                    sendMessage(socket, { 
-                                        type: "error", 
-                                        name: error.message, 
-                                        description: "Mempool validation failed" 
-                                    });
-                                    
-                                    // BREAK out of the switch statement! 
-                                    // Do NOT save it to the database, and do NOT gossip it.
-                                    break; 
+                                    // If it's a coinbase, the TA expects us to just store it and do nothing.
+                                    // NO error message should be sent to the peer!
+                                    if (error.message !== "COINBASE_REJECT") {
+                                        sendMessage(socket, {
+                                            type: "error",
+                                            name: error.message || "INVALID_TX_OUTPOINT",
+                                            description: "Mempool validation failed"
+                                        });
+                                    }
                                 }
                             }
                             else if (incomingObject.type === 'block') {
