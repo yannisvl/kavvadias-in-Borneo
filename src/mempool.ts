@@ -22,7 +22,7 @@ export async function initializeMempool() {
     // 1. Fetch the absolute current tip from the DB instead of importing it
     const tip = await db.get('longest_chain_tip').catch(() => null);
 
-    if (tip !== null) {
+    if (tip && typeof tip === "string") {
         try {
             // Fetch the Official UTXO state of our current tip
             const tipState = await db.get(`utxo_STATE_${tip}`);
