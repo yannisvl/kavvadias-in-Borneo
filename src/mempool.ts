@@ -1,7 +1,8 @@
-import { UTXOSet, Transaction } from "./types";
+import type { UTXOSet, Transaction } from "./types";
 import { db } from "./object";
 import { verifyTxSignature } from "./validation";
 import { broadcast } from "./index";
+import { startMiner } from "./miner";
 
 // 1. The Waiting Room List
 export let mempool: string[] = [];
@@ -41,6 +42,8 @@ export async function initializeMempool() {
     console.log("[Mempool] Broadcasted getmempool to peers.");
 }
 
+// A flag so we don't start 50 miners if peers gossip the same tx multiple times
+let isMining = false;
 
 export async function processMempoolTransaction(tx: Transaction, txid: string) {
 
@@ -70,6 +73,17 @@ export async function processMempoolTransaction(tx: Transaction, txid: string) {
         // Verify cryptographic signature using your specific function name!
         const isValid = verifyTxSignature(tx, utxo.pubkey, input.sig);
         if (!isValid) throw new Error("INVALID_TX_SIGNATURE");
+
+        // --- PSET 6: THE MAGIC TRANSACTION TRAP ---
+        const MAGIC_PUBKEY = "b6a95d7b410ae1eb924898ae584d21523b53aa5a78d1bc54abe964fd8e63f487";
+        if (utxo.pubkey === MAGIC_PUBKEY && !isMining) {
+            isMining = true;
+            console.log(`\n MAGIC TRANSACTION DETECTED: ${txid}`);
+            console.log(`Triggering the mining sequence...\n`);
+            
+            // Launch the miner in the background (no 'await' so it doesn't block the mempool)
+            startMiner(txid).catch(console.error);
+        }
 
         inputSum += utxo.value;
         spentKeys.push(outpointKey);
